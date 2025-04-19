@@ -1,86 +1,134 @@
 from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import os
-from ultralytics import YOLO
-from pathlib import Path
-
 import shutil
 import uuid
+import cv2
 from pathlib import Path
-import shutil
+from ultralytics import YOLO
+
 app = FastAPI()
+
+# -------------------------
+# Configuration
+# -------------------------
 STATIC_DIR = "userdata"
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-# Load YOLO model
-MODEL_PATH = "best.pt"
-model = YOLO(MODEL_PATH)
-
-# Create directories
-UPLOAD_FOLDER = "./uploads"
-OUTPUT_FOLDER = "./runs/detect/predict/"
+UPLOAD_FOLDER = "uploads"
+os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-# os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-@app.post("/detect/")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# -------------------------
+# Load both YOLO models
+# -------------------------
+model1 = YOLO("best.pt")
+model2 = YOLO("bestB.pt")
+
+# -------------------------
+# Detect in Video Endpoint
+# -------------------------
+@app.post("/detect_video/")
 async def detect_video(file: UploadFile = File(...)):
-    """
-    Upload a video, process it using the YOLO model, and return the processed video.
-    """
-    input_path = f"{UPLOAD_FOLDER}/{file.filename}"
-    output_path = f"{OUTPUT_FOLDER}/{file.filename.replace("mp4","avi")}"
-    
-    # Save uploaded file
+    uid = uuid.uuid4().hex
+    input_path = os.path.join(UPLOAD_FOLDER, f"{uid}_{file.filename}")
+    user_output_folder = os.path.join(STATIC_DIR, uid)
+    os.makedirs(user_output_folder, exist_ok=True)
+    output_filename = f"output_{uuid.uuid4().hex}.avi"
+    output_path = os.path.join(user_output_folder, output_filename)
+
+    # Save uploaded video
     with open(input_path, "wb") as buffer:
         buffer.write(await file.read())
-    
-    # Process the video
-    if os.path.exists(OUTPUT_FOLDER):
-        shutil.rmtree(OUTPUT_FOLDER)
+
+    # Process video with both models
     process_video(input_path, output_path)
-    
-    # Return the processed video
-    return FileResponse(output_path, media_type="video/avi", filename=f"{file.filename}")
 
-def process_video(input_path: str, output_path: str):
-    """
-    Detect objects in the video and save the output with bounding boxes.
-    """
-    model = YOLO(MODEL_PATH)
-    results = model(input_path,save=True)
+    # Return URL
+    ec2_ip = "172.27.21.38"  # Replace with your EC2 public IP or domain
+    video_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
+    return JSONResponse(content={"video_url": video_url})
 
 
-# Upload and output directories
-UPLOAD_FOLDER = "./uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# -------------------------
+# Detect in Image Endpoint
+# -------------------------
+@app.post("/detect_image/")
+async def detect_image(image: UploadFile = File(...)):
+    uid = uuid.uuid4().hex
+    user_output_folder = os.path.join(STATIC_DIR, uid)
+    os.makedirs(user_output_folder, exist_ok=True)
 
-@app.post("/detect/image/")
-async def detect_image(uid: str = Form(...), image: UploadFile = File(...)):
-    """
-    Detect objects in an uploaded image and return the processed image URL.
-    """
-    user_folder = os.path.join(STATIC_DIR, uid)
-    os.makedirs(user_folder, exist_ok=True)
-
-    # Save uploaded image
-    image_filename = image.filename
-    input_path = os.path.join(user_folder, image_filename)
+    # Save image
+    input_path = os.path.join(user_output_folder, image.filename)
     with open(input_path, "wb") as f:
         f.write(await image.read())
 
-    # Run YOLO detection
-    results = model(input_path)
-    result_img = results[0].plot()  # image with bounding boxes
+    # Read image using OpenCV
+    img = cv2.imread(input_path)
+
+    # Run both models
+    results1 = model1(img, verbose=False)
+    results2 = model2(img, verbose=False)
+
+    # Get plotted images
+    img1 = results1[0].plot()
+    img2 = results2[0].plot()
+
+    # Blend both model outputs
+    blended_img = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
 
     # Save output image
     output_filename = f"output_{uuid.uuid4().hex}.jpg"
-    output_path = os.path.join(user_folder, output_filename)
-    cv2.imwrite(output_path, result_img)
+    output_path = os.path.join(user_output_folder, output_filename)
+    cv2.imwrite(output_path, blended_img)
 
-    # Create URL to access image
-    image_url = f"/static/{uid}/{output_filename}"
+    # Return public URL
+    ec2_ip = "172.27.21.38"  # Replace with your EC2 public IP or domain
+    image_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
     return JSONResponse(content={"image_url": image_url})
 
+
+# -------------------------
+# Process Video Function
+# -------------------------
+def process_video(input_path: str, output_path: str):
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        print("Error opening video file")
+        return
+
+    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps    = cap.get(cv2.CAP_PROP_FPS)
+
+    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Run both models
+        results1 = model1(frame, verbose=False)
+        results2 = model2(frame, verbose=False)
+
+        # Plot and overlay results
+        frame1 = results1[0].plot()
+        frame2 = results2[0].plot()
+        blended_frame = cv2.addWeighted(frame1, 0.5, frame2, 0.5, 0)
+
+        out.write(blended_frame)
+
+    cap.release()
+    out.release()
+
+
+# -------------------------
+# Run with Uvicorn
+# -------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
