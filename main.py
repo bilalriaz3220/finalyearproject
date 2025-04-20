@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import os
@@ -42,10 +42,10 @@ async def detect_video(file: UploadFile = File(...)):
     with open(input_path, "wb") as buffer:
         buffer.write(await file.read())
 
-    # Process video with both models
+    # Process video with both models (1 frame/sec)
     process_video(input_path, output_path)
 
-    # Return URL
+    # Return public URL
     ec2_ip = "172.27.21.38"  # Replace with your EC2 public IP or domain
     video_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
     return JSONResponse(content={"video_url": video_url})
@@ -91,7 +91,7 @@ async def detect_image(image: UploadFile = File(...)):
 
 
 # -------------------------
-# Process Video Function
+# Process Video Function (1 frame per second)
 # -------------------------
 def process_video(input_path: str, output_path: str):
     cap = cv2.VideoCapture(input_path)
@@ -99,28 +99,35 @@ def process_video(input_path: str, output_path: str):
         print("Error opening video file")
         return
 
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps    = cap.get(cv2.CAP_PROP_FPS)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_interval = int(fps)  # Process one frame per second
 
     fourcc = cv2.VideoWriter_fourcc(*"XVID")
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
+    frame_idx = 0
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Run both models
-        results1 = model1(frame, verbose=False)
-        results2 = model2(frame, verbose=False)
+        if frame_idx % frame_interval == 0:
+            # Run both models
+            results1 = model1(frame, verbose=False)
+            results2 = model2(frame, verbose=False)
 
-        # Plot and overlay results
-        frame1 = results1[0].plot()
-        frame2 = results2[0].plot()
-        blended_frame = cv2.addWeighted(frame1, 0.5, frame2, 0.5, 0)
+            # Plot and overlay results
+            frame1 = results1[0].plot()
+            frame2 = results2[0].plot()
+            blended_frame = cv2.addWeighted(frame1, 0.5, frame2, 0.5, 0)
 
-        out.write(blended_frame)
+            # Repeat the frame to fill in skipped seconds
+            for _ in range(frame_interval):
+                out.write(blended_frame)
+
+        frame_idx += 1
 
     cap.release()
     out.release()
