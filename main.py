@@ -35,7 +35,7 @@ async def detect_video(file: UploadFile = File(...)):
     input_path = os.path.join(UPLOAD_FOLDER, f"{uid}_{file.filename}")
     user_output_folder = os.path.join(STATIC_DIR, uid)
     os.makedirs(user_output_folder, exist_ok=True)
-    output_filename = f"output_{uuid.uuid4().hex}.avi"
+    output_filename = f"output_{uuid.uuid4().hex}.mp4"
     output_path = os.path.join(user_output_folder, output_filename)
 
     # Save uploaded video
@@ -46,7 +46,7 @@ async def detect_video(file: UploadFile = File(...)):
     process_video(input_path, output_path)
 
     # Return public URL
-    ec2_ip = "172.27.21.38"  # Replace with your EC2 public IP or domain
+    ec2_ip = "18.204.199.142"  # Replace with your EC2 public IP or domain
     video_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
     return JSONResponse(content={"video_url": video_url})
 
@@ -85,7 +85,7 @@ async def detect_image(image: UploadFile = File(...)):
     cv2.imwrite(output_path, blended_img)
 
     # Return public URL
-    ec2_ip = "172.27.21.38"  # Replace with your EC2 public IP or domain
+    ec2_ip = "18.204.199.142"  # Replace with your EC2 public IP or domain
     image_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
     return JSONResponse(content={"image_url": image_url})
 
@@ -104,7 +104,7 @@ def process_video(input_path: str, output_path: str):
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_interval = int(fps)  # Process one frame per second
 
-    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
     frame_idx = 0
