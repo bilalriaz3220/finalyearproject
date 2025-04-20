@@ -68,7 +68,7 @@ async def detect_image(image: UploadFile = File(...)):
 
         img = cv2.imread(input_path)
 
-        results1 = model1(img, verbose=False)
+        results1 = model1.predict(img, conf=0.50,verbose=False)
         img1 = results1[0].plot()
 
         output_filename = f"output_{uuid.uuid4().hex}.jpg"
@@ -93,25 +93,18 @@ def process_video(input_path: str, output_path: str):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_interval = int(fps)  # Process one frame per second
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-    frame_idx = 0
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        if frame_idx % frame_interval == 0:
-            results1 = model1(frame, verbose=False)
-            frame1 = results1[0].plot()
-
-            for _ in range(frame_interval):
-                out.write(frame1)
-
-        frame_idx += 1
+        results1 = model1.predict(frame, conf=0.50, verbose=False)
+        frame1 = results1[0].plot()
+        out.write(frame1)
 
     cap.release()
     out.release()
