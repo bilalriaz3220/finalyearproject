@@ -20,9 +20,10 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # -------------------------
-# Load YOLO model
+# Load YOLO models
 # -------------------------
-model1 = YOLO("best.pt")  # Make sure 'best.pt' exists in your directory
+model1 = YOLO("best.pt")         # First model
+model2 = YOLO("bestB.pt") # Second model — change filename accordingly
 
 # -------------------------
 # Detect in Video Endpoint
@@ -68,12 +69,18 @@ async def detect_image(image: UploadFile = File(...)):
 
         img = cv2.imread(input_path)
 
-        results1 = model1.predict(img, conf=0.50,verbose=False)
+        # Run both models
+        results1 = model1.predict(img, conf=0.50, verbose=False)
+        results2 = model2.predict(img, conf=0.50, verbose=False)
+
+        # Combine both results visually — here we overlay both
         img1 = results1[0].plot()
+        img2 = results2[0].plot()
+        blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
 
         output_filename = f"output_{uuid.uuid4().hex}.jpg"
         output_path = os.path.join(user_output_folder, output_filename)
-        cv2.imwrite(output_path, img1)
+        cv2.imwrite(output_path, blended)
 
         ec2_ip = "18.204.199.142"
         image_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
@@ -83,7 +90,7 @@ async def detect_image(image: UploadFile = File(...)):
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 # -------------------------
-# Process Video Function (1 frame per second)
+# Process Video Function with Dual Model
 # -------------------------
 def process_video(input_path: str, output_path: str):
     cap = cv2.VideoCapture(input_path)
@@ -103,11 +110,17 @@ def process_video(input_path: str, output_path: str):
             break
 
         results1 = model1.predict(frame, conf=0.50, verbose=False)
+        results2 = model2.predict(frame, conf=0.50, verbose=False)
+
         frame1 = results1[0].plot()
-        out.write(frame1)
+        frame2 = results2[0].plot()
+        blended_frame = cv2.addWeighted(frame1, 0.5, frame2, 0.5, 0)
+
+        out.write(blended_frame)
 
     cap.release()
     out.release()
+
 
 # -------------------------
 # Run with Uvicorn
