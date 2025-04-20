@@ -24,7 +24,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # Load both YOLO models
 # -------------------------
 model1 = YOLO("best.pt")
-model2 = YOLO("bestB.pt")
+# model2 = YOLO("bestB.pt")
 
 # -------------------------
 # Detect in Video Endpoint
@@ -70,14 +70,14 @@ async def detect_image(image: UploadFile = File(...)):
 
     # Run both models
     results1 = model1(img, verbose=False)
-    results2 = model2(img, verbose=False)
+    # results2 = model2(img, verbose=False)
 
     # Get plotted images
     img1 = results1[0].plot()
-    img2 = results2[0].plot()
+    # img2 = results2[0].plot()
 
     # Blend both model outputs
-    blended_img = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
+    blended_img = cv2.addWeighted(img1,0.5, 0)
 
     # Save output image
     output_filename = f"output_{uuid.uuid4().hex}.jpg"
@@ -116,12 +116,12 @@ def process_video(input_path: str, output_path: str):
         if frame_idx % frame_interval == 0:
             # Run both models
             results1 = model1(frame, verbose=False)
-            results2 = model2(frame, verbose=False)
+            # results2 = model2(frame, verbose=False)
 
             # Plot and overlay results
             frame1 = results1[0].plot()
-            frame2 = results2[0].plot()
-            blended_frame = cv2.addWeighted(frame1, 0.5, frame2, 0.5, 0)
+            # frame2 = results2[0].plot()
+            blended_frame = cv2.addWeighted(frame1,0.5, 0)
 
             # Repeat the frame to fill in skipped seconds
             for _ in range(frame_interval):
