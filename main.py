@@ -5,8 +5,6 @@ import os
 import uuid
 import cv2
 from ultralytics import YOLO
-import tempfile
-import io
 
 app = FastAPI()
 
@@ -28,7 +26,7 @@ model1 = YOLO("best.pt")     # First YOLO model
 model2 = YOLO("bestB.pt")    # Second YOLO model
 
 # -------------------------
-# Detect in Video Endpoint
+# Video Detection Endpoint (Segmented)
 # -------------------------
 @app.post("/detect_video/")
 async def detect_video(file: UploadFile = File(...)):
@@ -37,26 +35,23 @@ async def detect_video(file: UploadFile = File(...)):
         input_path = os.path.join(UPLOAD_FOLDER, f"{uid}_{file.filename}")
         user_output_folder = os.path.join(STATIC_DIR, uid)
         os.makedirs(user_output_folder, exist_ok=True)
-        output_filename = f"output_{uuid.uuid4().hex}.mp4"
-        output_path = os.path.join(user_output_folder, output_filename)
 
         # Save uploaded video
         with open(input_path, "wb") as buffer:
             buffer.write(await file.read())
 
-        # Process video with dual model detection
-        process_video(input_path, output_path)
+        # Process and return 1-second chunks
+        segment_urls = process_video_by_second(input_path, user_output_folder)
 
-        # Return public URL
-        ec2_ip = "3.86.60.160"  # Replace with your EC2 IP
-        video_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
-        return JSONResponse(content={"video_url": video_url})
+        ec2_ip = "3.86.60.160"  # Replace with your public EC2 IP or domain
+        full_urls = [f"http://{ec2_ip}:8000/static/{uid}/{name}" for name in segment_urls]
+        return JSONResponse(content={"segments": full_urls})
 
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 # -------------------------
-# Detect in Image Endpoint
+# Image Detection Endpoint
 # -------------------------
 @app.post("/detect_image/")
 async def detect_image(image: UploadFile = File(...)):
@@ -91,46 +86,76 @@ async def detect_image(image: UploadFile = File(...)):
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 # -------------------------
-# Dual-Model Frame-by-Frame Video Processor
+# Dual-Model Segment-by-Segment Processor
 # -------------------------
-def process_video(input_path: str, output_path: str):
+def process_video_by_second(input_path: str, output_folder: str):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise ValueError("Error opening video file")
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
+    segment_urls = []
     frame_count = 0
+    segment_index = 0
+    frames_per_segment = fps  # Process 1 second at a time
+
+    frames_buffer = []
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Predict and visualize with both models
-        results1 = model1.predict(frame, conf=0.5, verbose=False)
-        results2 = model2.predict(frame, conf=0.5, verbose=False)
-
-        img1 = results1[0].plot()
-        img2 = results2[0].plot()
-
-        # Blend both outputs
-        blended_frame = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
-
-        # Write processed frame
-        out.write(blended_frame)
-
+        frames_buffer.append(frame)
         frame_count += 1
 
+        if frame_count % frames_per_segment == 0:
+            segment_filename = f"segment_{segment_index}.mp4"
+            segment_path = os.path.join(output_folder, segment_filename)
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter(segment_path, fourcc, fps, (width, height))
+
+            for f in frames_buffer:
+                results1 = model1.predict(f, conf=0.5, verbose=False)
+                results2 = model2.predict(f, conf=0.5, verbose=False)
+                img1 = results1[0].plot()
+                img2 = results2[0].plot()
+                blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
+                out.write(blended)
+
+            out.release()
+            segment_urls.append(segment_filename)
+            segment_index += 1
+            frames_buffer.clear()
+
+    # If any leftover frames after loop
+    if frames_buffer:
+        segment_filename = f"segment_{segment_index}.mp4"
+        segment_path = os.path.join(output_folder, segment_filename)
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(segment_path, fourcc, fps, (width, height))
+
+        for f in frames_buffer:
+            results1 = model1.predict(f, conf=0.5, verbose=False)
+            results2 = model2.predict(f, conf=0.5, verbose=False)
+            img1 = results1[0].plot()
+            img2 = results2[0].plot()
+            blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
+            out.write(blended)
+
+        out.release()
+        segment_urls.append(segment_filename)
+
     cap.release()
-    out.release()
+    return segment_urls
 
 # -------------------------
-# Run with Uvicorn
+# Local run (optional)
 # -------------------------
 if __name__ == "__main__":
     import uvicorn
