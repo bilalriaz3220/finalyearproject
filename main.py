@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import os
 import uuid
@@ -26,136 +26,61 @@ model1 = YOLO("best.pt")     # First YOLO model
 model2 = YOLO("bestB.pt")    # Second YOLO model
 
 # -------------------------
-# Video Detection Endpoint (Segmented)
+# Streaming Detection Endpoint
 # -------------------------
-@app.post("/detect_video/")
-async def detect_video(file: UploadFile = File(...)):
+@app.post("/stream_video/")
+async def stream_video(file: UploadFile = File(...)):
     try:
+        # Save the uploaded video
         uid = uuid.uuid4().hex
         input_path = os.path.join(UPLOAD_FOLDER, f"{uid}_{file.filename}")
-        user_output_folder = os.path.join(STATIC_DIR, uid)
-        os.makedirs(user_output_folder, exist_ok=True)
-
-        # Save uploaded video
         with open(input_path, "wb") as buffer:
             buffer.write(await file.read())
 
-        # Process and return 1-second chunks
-        segment_urls = process_video_by_second(input_path, user_output_folder)
-
-        ec2_ip = "3.86.60.160"  # Replace with your public EC2 IP or domain
-        full_urls = [f"http://{ec2_ip}:8000/static/{uid}/{name}" for name in segment_urls]
-        return JSONResponse(content={"segments": full_urls})
-
+        # Return a streaming response
+        return StreamingResponse(
+            process_video_stream(input_path),
+            media_type="multipart/x-mixed-replace; boundary=frame"
+        )
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 # -------------------------
-# Image Detection Endpoint
+# Dual-Model Frame-by-Frame Generator
 # -------------------------
-@app.post("/detect_image/")
-async def detect_image(image: UploadFile = File(...)):
-    try:
-        uid = uuid.uuid4().hex
-        user_output_folder = os.path.join(STATIC_DIR, uid)
-        os.makedirs(user_output_folder, exist_ok=True)
-
-        input_path = os.path.join(user_output_folder, image.filename)
-        with open(input_path, "wb") as f:
-            f.write(await image.read())
-
-        img = cv2.imread(input_path)
-
-        results1 = model1.predict(img, conf=0.5, verbose=False)
-        results2 = model2.predict(img, conf=0.5, verbose=False)
-
-        img1 = results1[0].plot()
-        img2 = results2[0].plot()
-
-        blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
-
-        output_filename = f"output_{uuid.uuid4().hex}.jpg"
-        output_path = os.path.join(user_output_folder, output_filename)
-        cv2.imwrite(output_path, blended)
-
-        ec2_ip = "3.86.60.160"
-        image_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
-        return JSONResponse(content={"image_url": image_url})
-
-    except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
-# -------------------------
-# Dual-Model Segment-by-Segment Processor
-# -------------------------
-def process_video_by_second(input_path: str, output_folder: str):
+def process_video_stream(input_path: str):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise ValueError("Error opening video file")
-
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-
-    segment_urls = []
-    frame_count = 0
-    segment_index = 0
-    frames_per_segment = fps  # Process 1 second at a time
-
-    frames_buffer = []
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        frames_buffer.append(frame)
-        frame_count += 1
+        # Predict using both models
+        results1 = model1.predict(frame, conf=0.5, verbose=False)
+        results2 = model2.predict(frame, conf=0.5, verbose=False)
 
-        if frame_count % frames_per_segment == 0:
-            segment_filename = f"segment_{segment_index}.mp4"
-            segment_path = os.path.join(output_folder, segment_filename)
+        # Overlay predictions
+        img1 = results1[0].plot()
+        img2 = results2[0].plot()
+        blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
 
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(segment_path, fourcc, fps, (width, height))
+        # Encode as JPEG
+        _, buffer = cv2.imencode('.jpg', blended)
+        frame_bytes = buffer.tobytes()
 
-            for f in frames_buffer:
-                results1 = model1.predict(f, conf=0.5, verbose=False)
-                results2 = model2.predict(f, conf=0.5, verbose=False)
-                img1 = results1[0].plot()
-                img2 = results2[0].plot()
-                blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
-                out.write(blended)
-
-            out.release()
-            segment_urls.append(segment_filename)
-            segment_index += 1
-            frames_buffer.clear()
-
-    # If any leftover frames after loop
-    if frames_buffer:
-        segment_filename = f"segment_{segment_index}.mp4"
-        segment_path = os.path.join(output_folder, segment_filename)
-
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(segment_path, fourcc, fps, (width, height))
-
-        for f in frames_buffer:
-            results1 = model1.predict(f, conf=0.5, verbose=False)
-            results2 = model2.predict(f, conf=0.5, verbose=False)
-            img1 = results1[0].plot()
-            img2 = results2[0].plot()
-            blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
-            out.write(blended)
-
-        out.release()
-        segment_urls.append(segment_filename)
+        # Yield for MJPEG stream
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+        )
 
     cap.release()
-    return segment_urls
 
 # -------------------------
-# Local run (optional)
+# Run with Uvicorn
 # -------------------------
 if __name__ == "__main__":
     import uvicorn
