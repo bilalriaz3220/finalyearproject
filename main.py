@@ -1,76 +1,131 @@
-from fastapi.responses import StreamingResponse
-import json
-import time
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+import os
+import uuid
+import cv2
+from ultralytics import YOLO
 
-@app.post("/stream_video_detection/")
-async def stream_video_detection(file: UploadFile = File(...)):
-    uid = uuid.uuid4().hex
-    input_path = os.path.join(UPLOAD_FOLDER, f"{uid}_{file.filename}")
-    output_path = os.path.join(STATIC_DIR, f"{uid}_result.mp4")
+app = FastAPI()
 
-    with open(input_path, "wb") as buffer:
-        buffer.write(await file.read())
+# -------------------------
+# Configuration
+# -------------------------
+STATIC_DIR = "userdata"
+UPLOAD_FOLDER = "uploads"
+os.makedirs(STATIC_DIR, exist_ok=True)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-    def generate():
-        cap = cv2.VideoCapture(input_path)
-        if not cap.isOpened():
-            yield json.dumps({"error": "Video not opened"}) + "\n"
-            return
+# Serve static files
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+# -------------------------
+# Load YOLO models
+# -------------------------
+model1 = YOLO("best.pt")     # First YOLO model
+model2 = YOLO("bestB.pt")    # Second YOLO model
 
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+# -------------------------
+# Detect in Video Endpoint
+# -------------------------
+@app.post("/detect_video/")
+async def detect_video(file: UploadFile = File(...)):
+    try:
+        uid = uuid.uuid4().hex
+        input_path = os.path.join(UPLOAD_FOLDER, f"{uid}_{file.filename}")
+        user_output_folder = os.path.join(STATIC_DIR, uid)
+        os.makedirs(user_output_folder, exist_ok=True)
+        output_filename = f"output_{uuid.uuid4().hex}.mp4"
+        output_path = os.path.join(user_output_folder, output_filename)
 
-        frame_index = 0
+        # Save uploaded video
+        with open(input_path, "wb") as buffer:
+            buffer.write(await file.read())
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+        # Process video with dual model detection
+        process_video(input_path, output_path)
 
-            result_entry = {"frame": frame_index, "model1": [], "model2": []}
+        # Return public URL
+        ec2_ip = "18.204.199.142"  # Replace with your EC2 IP
+        video_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
+        return JSONResponse(content={"video_url": video_url})
 
-            results1 = model1.predict(frame, conf=0.5, verbose=False)
-            results2 = model2.predict(frame, conf=0.5, verbose=False)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
-            for r in results1[0].boxes.data.tolist():
-                x1, y1, x2, y2, conf, cls = r
-                result_entry["model1"].append({
-                    "class_id": int(cls),
-                    "confidence": float(conf),
-                    "bbox": [int(x1), int(y1), int(x2), int(y2)]
-                })
+# -------------------------
+# Detect in Image Endpoint
+# -------------------------
+@app.post("/detect_image/")
+async def detect_image(image: UploadFile = File(...)):
+    try:
+        uid = uuid.uuid4().hex
+        user_output_folder = os.path.join(STATIC_DIR, uid)
+        os.makedirs(user_output_folder, exist_ok=True)
 
-            for r in results2[0].boxes.data.tolist():
-                x1, y1, x2, y2, conf, cls = r
-                result_entry["model2"].append({
-                    "class_id": int(cls),
-                    "confidence": float(conf),
-                    "bbox": [int(x1), int(y1), int(x2), int(y2)]
-                })
+        input_path = os.path.join(user_output_folder, image.filename)
+        with open(input_path, "wb") as f:
+            f.write(await image.read())
 
-            # Visualize detections
-            img1 = results1[0].plot()
-            img2 = results2[0].plot()
-            blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
-            out.write(blended)
+        img = cv2.imread(input_path)
 
-            # Send one frame’s result
-            yield f"data: {json.dumps(result_entry)}\n\n"
-            frame_index += 1
+        results1 = model1.predict(img, conf=0.5, verbose=False)
+        results2 = model2.predict(img, conf=0.5, verbose=False)
 
-        cap.release()
-        out.release()
+        img1 = results1[0].plot()
+        img2 = results2[0].plot()
 
-        # Final video URL
-        video_url = f"/static/{os.path.basename(output_path)}"
-        yield f"data: {json.dumps({'done': True, 'video_url': video_url})}\n\n"
+        blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+        output_filename = f"output_{uuid.uuid4().hex}.jpg"
+        output_path = os.path.join(user_output_folder, output_filename)
+        cv2.imwrite(output_path, blended)
 
+        ec2_ip = "18.204.199.142"
+        image_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
+        return JSONResponse(content={"image_url": image_url})
+
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+# -------------------------
+# Dual-Model Frame-by-Frame Video Processor
+# -------------------------
+def process_video(input_path: str, output_path: str):
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        raise ValueError("Error opening video file")
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    frame_count = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Predict and visualize with both models
+        results1 = model1.predict(frame, conf=0.5, verbose=False)
+        results2 = model2.predict(frame, conf=0.5, verbose=False)
+
+        img1 = results1[0].plot()
+        img2 = results2[0].plot()
+
+        # Blend both outputs
+        blended_frame = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
+
+        # Write processed frame
+        out.write(blended_frame)
+
+        frame_count += 1
+
+    cap.release()
+    out.release()
 
 # -------------------------
 # Run with Uvicorn
