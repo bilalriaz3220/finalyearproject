@@ -1,9 +1,11 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import os
 import uuid
 import cv2
+import numpy as np
+import base64
 from ultralytics import YOLO
 
 app = FastAPI()
@@ -89,6 +91,40 @@ async def detect_image(image: UploadFile = File(...)):
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 # -------------------------
+# Detect in Videostream Endpoint
+# -------------------------
+@app.post("/detect_stream/")
+async def detect_stream(request: Request):
+    try:
+        data = await request.json()
+        base64_image = data.get("image_base64")
+
+        if not base64_image:
+            return JSONResponse(content={"error": "No image_base64 provided"}, status_code=400)
+
+        # Decode base64 image
+        image_data = base64.b64decode(base64_image)
+        nparr = np.frombuffer(image_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        # Process with both YOLO models
+        results1 = model1.predict(img, conf=0.5, verbose=False)
+        results2 = model2.predict(img, conf=0.5, verbose=False)
+
+        img1 = results1[0].plot()
+        img2 = results2[0].plot()
+        blended = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
+
+        # Encode processed image back to base64
+        _, buffer = cv2.imencode('.jpg', blended)
+        encoded_result = base64.b64encode(buffer).decode('utf-8')
+
+        return JSONResponse(content={"processed_base64": encoded_result})
+
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+# -------------------------
 # Dual-Model Frame-by-Frame Video Processor
 # -------------------------
 def process_video(input_path: str, output_path: str):
@@ -103,26 +139,19 @@ def process_video(input_path: str, output_path: str):
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-    frame_count = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Predict and visualize with both models
         results1 = model1.predict(frame, conf=0.5, verbose=False)
         results2 = model2.predict(frame, conf=0.5, verbose=False)
 
         img1 = results1[0].plot()
         img2 = results2[0].plot()
-
-        # Blend both outputs
         blended_frame = cv2.addWeighted(img1, 0.5, img2, 0.5, 0)
 
-        # Write processed frame
         out.write(blended_frame)
-
-        frame_count += 1
 
     cap.release()
     out.release()
