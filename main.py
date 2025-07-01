@@ -48,7 +48,7 @@ async def detect_video(file: UploadFile = File(...)):
         process_video(input_path, output_path)
 
         # Return public URL
-        ec2_ip = "54.82.47.61"  # Replace with your EC2 IP
+        ec2_ip = "3.92.210.96"  # Replace with your EC2 IP
         video_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
         return JSONResponse(content={"video_url": video_url})
 
@@ -83,7 +83,7 @@ async def detect_image(image: UploadFile = File(...)):
         output_path = os.path.join(user_output_folder, output_filename)
         cv2.imwrite(output_path, blended)
 
-        ec2_ip = "54.82.47.61"
+        ec2_ip = "3.92.210.96"
         image_url = f"http://{ec2_ip}:8000/static/{uid}/{output_filename}"
         return JSONResponse(content={"image_url": image_url})
 
